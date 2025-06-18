@@ -106,7 +106,7 @@ if url:
                         temp_file = audio_stream.download(output_path=directory, filename="temp_audio.mp4")
                         mp3_path = os.path.join(directory, file_name)
                         clip = AudioFileClip(temp_file)
-                        clip.write_audiofile(mp3_path)
+                        clip.write_audiofile(mp3_path, codec="libmp3lame")
                         clip.close()
                         os.remove(temp_file)
                         st.success("Audio downloaded successfully! 🎧")
