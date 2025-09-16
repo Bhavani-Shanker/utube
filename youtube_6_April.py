@@ -1,117 +1,105 @@
 import streamlit as st
 from pytubefix import YouTube
-from moviepy.editor import AudioFileClip
 import os
 import re
+import urllib.error
 
-# Create download directory
-directory = 'downloads/'
-if not os.path.exists(directory):
-    os.makedirs(directory)
+# Optional: Uncomment to use yt-dlp as fallback
+# from yt_dlp import YoutubeDL
 
-# Streamlit page setup
-st.set_page_config(page_title="YTD", page_icon="🚀", layout="wide")
-st.markdown(f"""
-    <style>
-    .stApp {{
-        background-image: url("https://images.unsplash.com/photo-1516557070061-c3d1653fa646?ixlib=rb-4.0.3&ixid=MnwxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8&auto=format&fit=crop&w=2070&q=80"); 
-        background-attachment: fixed;
-        background-size: cover;
-    }}
-    </style>
-    """, unsafe_allow_html=True)
+# Function to validate YouTube URL
+def is_valid_youtube_url(url):
+    youtube_regex = (
+        r'(https?://)?(www\.)?(youtube|youtu|youtube-nocookie)\.(com|be)/'
+        r'(watch\?v=|embed/|v/|.+\?v=)?([^&=%\?]{11})')
+    return bool(re.match(youtube_regex, url))
 
-# Function to fetch video details
-@st.cache_resource
-def get_info(url):
+# Function to sanitize filenames
+def sanitize_filename(filename):
+    return re.sub(r'[^\w\s.-]', '', filename)
+
+# Function to download with pytube
+def download_with_pytube(url, download_type, resolution=None):
     try:
         yt = YouTube(url)
-        streams = yt.streams.filter(progressive=True, type='video')
-        if not streams:
-            raise ValueError("No progressive streams available for this video.")
-        details = {
-            "image": yt.thumbnail_url,
-            "streams": streams,
-            "title": yt.title,
-            "length": yt.length
-        }
-        itag, resolutions, vformat, frate = ([] for _ in range(4))
-        for i in streams:
-            res = re.search(r'(\d+)p', str(i))
-            typ = re.search(r'video/(\w+)', str(i))
-            fps = re.search(r'(\d+)fps', str(i))
-            tag = re.search(r'itag="(\d+)"', str(i))
-            itag.append(tag.group(1) if tag else "0")
-            resolutions.append(res.group(0) if res else "N/A")
-            vformat.append(typ.group(1) if typ else "N/A")
-            frate.append(fps.group(1) if fps else "N/A")
-        details["resolutions"] = resolutions
-        details["itag"] = itag
-        details["fps"] = frate
-        details["format"] = vformat
-        return details
+        if download_type == "Video":
+            stream = yt.streams.filter(progressive=True, file_extension='mp4', resolution=resolution).first()
+            if not stream:
+                return None, f"Selected resolution ({resolution}) not available"
+            filename = sanitize_filename(f"{yt.title}.mp4")
+        else:  # Audio
+            stream = yt.streams.filter(only_audio=True, file_extension='mp4').first()
+            if not stream:
+                return None, "Audio stream not available"
+            filename = sanitize_filename(f"{yt.title}.mp3")
+        
+        file_path = stream.download(output_path="downloads", filename=filename)
+        return file_path, None
+    except urllib.error.HTTPError as e:
+        return None, f"HTTP Error {e.code}: {e.reason} - Video may be restricted or unavailable"
     except Exception as e:
-        st.error(f"Error fetching video info: {str(e)}", icon="🚨")
-        return None
+        return None, f"Error: {str(e)}"
 
-# UI
-st.title("YouTube Downloader 🚀")
-url = st.text_input("Paste URL here 👇", placeholder='https://www.youtube.com/')
 
-if url:
-    try:
-        yt = YouTube(url)
-        st.image(yt.thumbnail_url)
-        format_choice = st.radio("Choose Download Format", ["Video (MP4)", "Audio (MP3)"])
 
-        if format_choice == "Video (MP4)":
-            v_info = get_info(url)
-            if v_info:
-                col1, col2 = st.columns([1, 1.5], gap="small")
-                with col1:
-                    st.image(v_info["image"])
-                with col2:
-                    st.subheader("Video Details ⚙️")
-                    res_inp = st.selectbox('__Select Resolution__', v_info["resolutions"])
-                    id = v_info["resolutions"].index(res_inp)
-                    st.write(f"__Title:__ {v_info['title']}")
-                    st.write(f"__Length:__ {v_info['length']} sec")
-                    st.write(f"__Resolution:__ {v_info['resolutions'][id]}")
-                    st.write(f"__Frame Rate:__ {v_info['fps'][id]}")
-                    st.write(f"__Format:__ {v_info['format'][id]}")
-                    file_name = st.text_input('__Save as 🎯__', placeholder=v_info['title'])
-                    if not file_name.endswith(".mp4"):
-                        file_name += ".mp4"
 
-                if st.button("Download Video ⚡️"):
-                    with st.spinner('Downloading video...'):
-                        try:
-                            ds = v_info["streams"].get_by_itag(v_info['itag'][id])
-                            ds.download(filename=file_name, output_path=directory)
-                            st.success('Download Complete ✅')
-                            st.balloons()
-                        except Exception as e:
-                            st.error(f'Error: {str(e)}', icon="🚨")
+# Main download function
+def download_youtube_content(url, download_type, resolution=None):
+    # Try pytube first
+    file_path, error = download_with_pytube(url, download_type, resolution)
+    if file_path:
+        return file_path, None
+    
+    # Optional: Uncomment to enable yt-dlp fallback
+    """
+    st.warning("pytube failed, trying yt-dlp...")
+    file_path, error = download_with_ytdlp(url, download_type, resolution)
+    if file_path:
+        return file_path, None
+    """
+    
+    return None, error
 
-        elif format_choice == "Audio (MP3)":
-            st.subheader("Audio Download 🎵")
-            st.write(f"__Title:__ {yt.title}")
-            file_name = st.text_input('__Save as 🎯__', placeholder=yt.title)
-            if not file_name.endswith(".mp3"):
-                file_name += ".mp3"
-            if st.button("Download Audio 🎧"):
-                with st.spinner("Downloading audio..."):
-                    try:
-                        audio_stream = yt.streams.filter(only_audio=True).first()
-                        temp_file = audio_stream.download(output_path=directory, filename="temp_audio.mp4")
-                        mp3_path = os.path.join(directory, file_name)
-                        clip = AudioFileClip(temp_file)
-                        clip.write_audiofile(mp3_path, codec="libmp3lame")
-                        clip.close()
-                        os.remove(temp_file)
-                        st.success("Audio downloaded successfully! 🎧")
-                        st.balloons()
-                    except Exception as e:
-                        st.error(f"Audio download failed: {e}", icon="🚨")
-    except Exception as e:
-        st.error(f"Error initializing video: {str(e)}", icon="🚨")
+# Streamlit UI
+st.title("YouTube Video/Audio Downloader")
+
+# Input URL
+url = st.text_input("Enter YouTube URL:")
+
+# Download type selection
+download_type = st.radio("Select download type:", ("Video", "Audio"))
+
+# Resolution selection for video
+resolution = None
+if download_type == "Video":
+    resolution = st.selectbox("Select video resolution:", ["720p", "480p", "360p", "240p", "144p"])
+
+# Create downloads directory
+if not os.path.exists("downloads"):
+    os.makedirs("downloads")
+
+# Download button
+if st.button("Download"):
+    if not url:
+        st.error("Please enter a YouTube URL")
+    elif not is_valid_youtube_url(url):
+        st.error("Invalid YouTube URL. Please enter a valid URL (e.g., https://www.youtube.com/watch?v=...)")
+    else:
+        with st.spinner("Downloading..."):
+            file_path, error = download_youtube_content(url, download_type, resolution)
+            
+            if error:
+                st.error(f"Error: {error}")
+                if "HTTP Error 400" in error:
+                    st.error("This error often occurs due to restricted videos or YouTube API changes. Try a different video or check the URL.")
+            else:
+                st.success("Download completed!")
+                with open(file_path, "rb") as file:
+                    file_extension = "mp3" if download_type == "Audio" else "mp4"
+                    st.download_button(
+                        label="Download File",
+                        data=file,
+                        file_name=os.path.basename(file_path),
+                        mime=f"audio/{file_extension}" if download_type == "Audio" else f"video/{file_extension}"
+                    )
+
