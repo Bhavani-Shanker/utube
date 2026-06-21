@@ -2,10 +2,20 @@ import streamlit as st
 from pytubefix import YouTube
 import os
 import re
+import tempfile
 import urllib.error
 
 # moviepy is used to turn the downloaded audio stream (m4a/aac) into a real .mp3
 from moviepy.editor import AudioFileClip
+
+# Server-side scratch space for pytubefix's intermediate download (it has no
+# in-memory download API, so it always needs to write to disk first). This
+# is anchored to the system temp dir rather than a relative "downloads"
+# path, so it always resolves to the same real location regardless of
+# which folder you happened to run `streamlit run` from. Every file written
+# here is deleted again within the same request, right after its bytes are
+# read into memory for the actual browser download below.
+SCRATCH_DIR = os.path.join(tempfile.gettempdir(), "yt_downloader_scratch")
 
 
 def human_size(num_bytes: int) -> str:
@@ -81,7 +91,7 @@ def download_with_pytube(url, download_type, resolution=None):
             if not stream:
                 return None, None, "No downloadable MP4 video stream was found for this video."
             filename = sanitize_filename(f"{yt.title}.mp4")
-            file_path = stream.download(output_path="downloads", filename=filename)
+            file_path = stream.download(output_path=SCRATCH_DIR, filename=filename)
             return file_path, note, None
 
         else:  # Audio
@@ -99,11 +109,11 @@ def download_with_pytube(url, download_type, resolution=None):
             # first, then transcode it to a genuine .mp3 with moviepy.
             base_name = sanitize_filename(yt.title)
             raw_path = stream.download(
-                output_path="downloads",
+                output_path=SCRATCH_DIR,
                 filename=f"{base_name}_raw.{stream.subtype}",
             )
 
-            mp3_path = os.path.join("downloads", f"{base_name}.mp3")
+            mp3_path = os.path.join(SCRATCH_DIR, f"{base_name}.mp3")
             try:
                 clip = AudioFileClip(raw_path)
                 clip.write_audiofile(mp3_path, logger=None)
@@ -147,7 +157,12 @@ with st.expander("ℹ️ Where will the file be saved?"):
         "browser's settings (Chrome: Settings → Downloads. Firefox: "
         "Settings → General → Files and Applications. Edge: Settings → "
         "Downloads). Once that's on, this link will pop up a save dialog "
-        "like any other download."
+        "like any other download.\n\n"
+        "**Note:** while fetching, the app briefly writes a working copy to "
+        "a temp folder on the server (so it has something to read into "
+        "memory) and deletes it right away. That temp copy is not your "
+        "download — the only real download is the button below, which goes "
+        "through your browser."
     )
 
 url = st.text_input(
@@ -161,8 +176,8 @@ resolution = None
 if download_type == "Video":
     resolution = st.selectbox("Select video resolution:", ["720p", "480p", "360p", "240p", "144p"])
 
-if not os.path.exists("downloads"):
-    os.makedirs("downloads")
+if not os.path.exists(SCRATCH_DIR):
+    os.makedirs(SCRATCH_DIR)
 
 # If the inputs changed since the last successful fetch, clear the stale
 # result so we never show a download link for the wrong video.
@@ -228,6 +243,13 @@ if "ready_file" in st.session_state:
         mime=ready["mime"],
         type="primary",
         use_container_width=True,
+        # Prevents the click from triggering a script rerun. Without this,
+        # some Streamlit versions can swallow the click (especially the
+        # first one after a Fetch) because the rerun races with the file
+        # being served — the button visibly "clicks" but no browser
+        # download starts. The data here is already fixed in session_state,
+        # so there's nothing that needs to be recomputed on click anyway.
+        on_click="ignore",
     )
     st.caption(
         "Clicking the link/button above saves the file through your browser's "
